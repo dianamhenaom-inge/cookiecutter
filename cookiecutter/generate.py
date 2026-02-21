@@ -56,6 +56,9 @@ def is_copy_only_path(path: str, context: dict[str, Any]) -> bool:
     return False
 
 
+from typing import Any
+
+
 def apply_overwrites_to_context(
     context: dict[str, Any],
     overwrite_context: dict[str, Any],
@@ -63,64 +66,107 @@ def apply_overwrites_to_context(
     in_dictionary_variable: bool = False,
 ) -> None:
     """Modify the given context in place based on the overwrite_context."""
-    for variable, overwrite in overwrite_context.items():
-        if variable not in context:
-            if not in_dictionary_variable:
-                # We are dealing with a new variable on first level, ignore
-                continue
-            # We are dealing with a new dictionary variable in a deeper level
-            context[variable] = overwrite
 
-        context_value = context[variable]
-        if isinstance(context_value, list):
-            if in_dictionary_variable:
-                context[variable] = overwrite
-                continue
-            if isinstance(overwrite, list):
-                # We are dealing with a multichoice variable
-                # Let's confirm all choices are valid for the given context
-                if set(overwrite).issubset(set(context_value)):
-                    context[variable] = overwrite
-                else:
-                    msg = (
-                        f"{overwrite} provided for multi-choice variable "
-                        f"{variable}, but valid choices are {context_value}"
-                    )
-                    raise ValueError(msg)
-            else:
-                # We are dealing with a choice variable
-                if overwrite in context_value:
-                    # This overwrite is actually valid for the given context
-                    # Let's set it as default (by definition first item in list)
-                    # see ``cookiecutter.prompt.prompt_choice_for_config``
-                    context_value.remove(overwrite)
-                    context_value.insert(0, overwrite)
-                else:
-                    msg = (
-                        f"{overwrite} provided for choice variable "
-                        f"{variable}, but the choices are {context_value}."
-                    )
-                    raise ValueError(msg)
-        elif isinstance(context_value, dict) and isinstance(overwrite, dict):
-            # Partially overwrite some keys in original dict
-            apply_overwrites_to_context(
-                context_value, overwrite, in_dictionary_variable=True
-            )
-            context[variable] = context_value
-        elif isinstance(context_value, bool) and isinstance(overwrite, str):
-            # We are dealing with a boolean variable
-            # Convert overwrite to its boolean counterpart
-            try:
-                context[variable] = YesNoPrompt().process_response(overwrite)
-            except InvalidResponse as err:
-                msg = (
-                    f"{overwrite} provided for variable "
-                    f"{variable} could not be converted to a boolean."
-                )
-                raise ValueError(msg) from err
-        else:
-            # Simply overwrite the value for this variable
-            context[variable] = overwrite
+    for key, overwrite in overwrite_context.items():
+
+        if _is_new_variable(context, key, in_dictionary_variable):
+            context[key] = overwrite
+            continue
+
+        current_value = context[key]
+
+        if _is_list(current_value):
+            _process_list(context, key, current_value, overwrite, in_dictionary_variable)
+            continue
+
+        if _is_dict_pair(current_value, overwrite):
+            _process_dict(current_value, overwrite)
+            continue
+
+        if _is_boolean_string(current_value, overwrite):
+            _process_boolean(context, key, overwrite)
+            continue
+
+        context[key] = overwrite
+
+
+# =================================================
+# Validators
+# =================================================
+
+def _is_new_variable(context, key, in_dict):
+    return key not in context and in_dict
+
+
+def _is_list(value):
+    return isinstance(value, list)
+
+
+def _is_dict_pair(current, overwrite):
+    return isinstance(current, dict) and isinstance(overwrite, dict)
+
+
+def _is_boolean_string(current, overwrite):
+    return isinstance(current, bool) and isinstance(overwrite, str)
+
+
+# =================================================
+# Processors
+# =================================================
+
+def _process_list(context, key, current, overwrite, in_dict):
+
+    if in_dict:
+        context[key] = overwrite
+        return
+
+    if isinstance(overwrite, list):
+        _process_multichoice(context, key, current, overwrite)
+    else:
+        _process_single_choice(context, key, current, overwrite)
+
+
+def _process_multichoice(context, key, current, overwrite):
+
+    if not set(overwrite).issubset(current):
+        raise ValueError(
+            f"{overwrite} no es válido para {key}. "
+            f"Opciones permitidas: {current}"
+        )
+
+    context[key] = overwrite
+
+
+def _process_single_choice(context, key, current, overwrite):
+
+    if overwrite not in current:
+        raise ValueError(
+            f"{overwrite} no es válido para {key}. "
+            f"Opciones permitidas: {current}"
+        )
+
+    current.remove(overwrite)
+    current.insert(0, overwrite)
+
+
+def _process_dict(current, overwrite):
+
+    apply_overwrites_to_context(
+        current,
+        overwrite,
+        in_dictionary_variable=True
+    )
+
+
+def _process_boolean(context, key, overwrite):
+
+    try:
+        context[key] = YesNoPrompt().process_response(overwrite)
+
+    except InvalidResponse as err:
+        raise ValueError(
+            f"{overwrite} no es válido como booleano para {key}"
+        ) from err
 
 
 def generate_context(
